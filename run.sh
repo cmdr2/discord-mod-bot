@@ -1,4 +1,4 @@
 #!/usr/bin/env bash
 
 source .env
-python bot.py
+exec python bot.py
