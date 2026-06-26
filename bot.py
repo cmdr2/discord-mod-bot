@@ -3,6 +3,7 @@ import asyncio
 import signal
 import aiohttp
 import hashlib
+import logging as log
 import time
 import os
 from collections import defaultdict
@@ -15,6 +16,14 @@ if not BOT_TOKEN:
 SPAM_WINDOW_SECONDS = 60
 SPAM_CHANNEL_THRESHOLD = 3
 ALERT_CHANNEL_NAME = "mod-room"  # Channel to send spam alerts to
+
+log.basicConfig(
+    filename="log.txt",
+    filemode="a",
+    level=log.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s",
+    encoding="utf-8",
+)
 
 # State
 
@@ -117,9 +126,9 @@ async def send_spam_alert(guild: discord.Guild, message: discord.Message, matche
     """Post a spam alert embed to #ALERT_CHANNEL_NAME."""
     alert_channel = discord.utils.get(guild.text_channels, name=ALERT_CHANNEL_NAME)
     if not alert_channel:
-        print(f"[warn] Could not find #{ALERT_CHANNEL_NAME} in {guild.name}")
+        log.warning(f"[warn] Could not find #{ALERT_CHANNEL_NAME} in {guild.name}")
         return
-    print(f"[alert] Sending spam alert for {message.author} in #{message.channel.name}")
+    log.warning(f"[alert] Sending spam alert for {message.author} in #{message.channel.name}")
     await alert_channel.send(embed=build_spam_embed(message, matches))
 
 
@@ -131,14 +140,14 @@ async def delete_spam_messages(guild: discord.Guild, matches: list[tuple[int, in
             continue
         try:
             msg = await channel.fetch_message(message_id)
-            print(f"[delete] Deleting message {message_id} in #{channel.name}")
+            log.warning(f"[delete] Deleting message {message_id} in #{channel.name}")
             await msg.delete()
         except discord.NotFound:
             pass  # Already deleted
         except discord.Forbidden:
-            print(f"[warn] Missing permission to delete message in #{channel.name}")
+            log.warning(f"[warn] Missing permission to delete message in #{channel.name}")
         except Exception as e:
-            print(f"[error] Failed to delete message {message_id} in #{channel.name}: {e}")
+            log.error(f"[error] Failed to delete message {message_id} in #{channel.name}: {e}")
 
 
 # Main
@@ -149,8 +158,8 @@ client = discord.Client(intents=intents)
 
 @client.event
 async def on_ready():
-    print(f"Logged in as {client.user}")
-    print("Ready.")
+    log.info(f"Logged in as {client.user}")
+    log.info("Ready.")
 
 
 @client.event
@@ -159,7 +168,7 @@ async def on_message(message: discord.Message):
     if message.author.bot or not message.guild:
         return
 
-    print(f"[{message.guild} / #{message.channel}] {message.author}: {message.content}")
+    log.debug(f"[{message.guild} / #{message.channel}] {message.author}: {message.content}")
 
     if is_privileged(message.author):
         return
@@ -169,7 +178,9 @@ async def on_message(message: discord.Message):
     matches, actions = record_and_check(message.guild.id, key, message.channel.id, message.id)
 
     if matches:
-        print(f"[spam] {message.author} triggered spam detection across {len(set(ch for ch, _ in matches))} channels")
+        log.warning(
+            f"[spam] {message.author} triggered spam detection across {len(set(ch for ch, _ in matches))} channels"
+        )
         if "alert" in actions:
             await send_spam_alert(message.guild, message, matches)
         if "delete" in actions:
