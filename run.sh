@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 
+source .env
 nohup python bot.py > /dev/null 2> crash_log.txt &
 disown
 
