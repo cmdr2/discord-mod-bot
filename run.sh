@@ -1,5 +1,3 @@
-#!/usr/bin/env bash
-
 python bot.py > /dev/null 2> crash_log.txt &
 disown
 
