@@ -20,6 +20,8 @@ ALERT_CHANNEL_NAME = "mod-room"  # Channel to send spam alerts to
 
 # { guild_id: { message_key: [(channel_id, timestamp, message_id), ...] } }
 tracker: dict[int, dict[tuple, list]] = defaultdict(lambda: defaultdict(list))
+# { guild_id: { message_key: expiry_timestamp } }
+confirmed_spam: dict[int, dict[tuple, float]] = defaultdict(dict)
 
 
 # Privilege checking
@@ -60,15 +62,27 @@ def make_message_key(user_id: int, content: str, attachment_hashes: tuple) -> tu
     return (user_id, content, attachment_hashes)
 
 
-def record_and_check(guild_id: int, key: tuple, channel_id: int, message_id: int) -> list[tuple[int, int]] | None:
+def record_and_check(
+    guild_id: int, key: tuple, channel_id: int, message_id: int
+) -> tuple[list[tuple[int, int]], list[str]]:
     """
-    Record this message occurrence and return a list of (channel_id, message_id) pairs
-    if the spam threshold is reached across enough distinct channels, otherwise None.
-    Prunes entries older than SPAM_WINDOW_SECONDS automatically.
+    Record this message occurrence and return a list of (channel_id, message_id) pairs, and actions to perform.
+    If the spam threshold is reached across enough distinct channels, return "alert" and "delete" actions.
+    If the spam has already been confirmed (and alerted), return "delete" action.
+    Otherwise, return an empty list of pairs and no actions.
+
+    Records confirmed spam entries with a TTL of 10 * SPAM_WINDOW_SECONDS.
     """
     now = time.time()
-    entries = tracker[guild_id][key]
 
+    # If already confirmed spam, delete the msg immediately (unless the window expired)
+    if key in confirmed_spam[guild_id]:
+        if now < confirmed_spam[guild_id][key]:
+            return [(channel_id, message_id)], ["delete"]
+        else:  # TTL expired, clear the entry
+            del confirmed_spam[guild_id][key]
+
+    entries = tracker[guild_id][key]
     entries.append((channel_id, now, message_id))
 
     tracker[guild_id][key] = [(ch, ts, mid) for ch, ts, mid in entries if now - ts <= SPAM_WINDOW_SECONDS]
@@ -77,10 +91,11 @@ def record_and_check(guild_id: int, key: tuple, channel_id: int, message_id: int
 
     if len(distinct_channels) >= SPAM_CHANNEL_THRESHOLD:
         matches = [(ch, mid) for ch, _, mid in tracker[guild_id][key]]
+        confirmed_spam[guild_id][key] = now + (10 * SPAM_WINDOW_SECONDS)
         del tracker[guild_id][key]
-        return matches
+        return matches, ["alert", "delete"]
 
-    return None
+    return [], []
 
 
 # Alerting
@@ -104,6 +119,7 @@ async def send_spam_alert(guild: discord.Guild, message: discord.Message, matche
     if not alert_channel:
         print(f"[warn] Could not find #{ALERT_CHANNEL_NAME} in {guild.name}")
         return
+    print(f"[alert] Sending spam alert for {message.author} in #{message.channel.name}")
     await alert_channel.send(embed=build_spam_embed(message, matches))
 
 
@@ -115,6 +131,7 @@ async def delete_spam_messages(guild: discord.Guild, matches: list[tuple[int, in
             continue
         try:
             msg = await channel.fetch_message(message_id)
+            print(f"[delete] Deleting message {message_id} in #{channel.name}")
             await msg.delete()
         except discord.NotFound:
             pass  # Already deleted
@@ -148,12 +165,14 @@ async def on_message(message: discord.Message):
 
     hashes = await get_attachment_hashes(message.attachments)
     key = make_message_key(message.author.id, message.content, hashes)
-    matches = record_and_check(message.guild.id, key, message.channel.id, message.id)
+    matches, actions = record_and_check(message.guild.id, key, message.channel.id, message.id)
 
     if matches:
         print(f"[spam] {message.author} triggered spam detection across {len(set(ch for ch, _ in matches))} channels")
-        await send_spam_alert(message.guild, message, matches)
-        await delete_spam_messages(message.guild, matches)
+        if "alert" in actions:
+            await send_spam_alert(message.guild, message, matches)
+        if "delete" in actions:
+            await delete_spam_messages(message.guild, matches)
 
 
 def handle_sigint(sig, frame):
