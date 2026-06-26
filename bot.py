@@ -1,10 +1,10 @@
-import os
 import discord
 import asyncio
 import signal
 import aiohttp
 import hashlib
 import time
+import os
 from collections import defaultdict
 
 # Config
@@ -12,13 +12,22 @@ BOT_TOKEN = os.environ.get("DISCORD_TOKEN")
 if not BOT_TOKEN:
     raise ValueError("DISCORD_TOKEN environment variable not set")
 
-SPAM_WINDOW_SECONDS = 60  # How far back to look
-SPAM_CHANNEL_THRESHOLD = 3  # How many distinct channels before it's spam
-ALERT_CHANNEL_NAME = "general"  # Channel to send spam alerts to
+SPAM_WINDOW_SECONDS = 60
+SPAM_CHANNEL_THRESHOLD = 3
+ALERT_CHANNEL_NAME = "mod-room"  # Channel to send spam alerts to
 
 # State
-# { guild_id: { message_key: [(channel_id, timestamp), ...] } }
+
+# { guild_id: { message_key: [(channel_id, timestamp, message_id), ...] } }
 tracker: dict[int, dict[tuple, list]] = defaultdict(lambda: defaultdict(list))
+
+
+# Privilege checking
+def is_privileged(member: discord.Member) -> bool:
+    """Return True if the member is the server owner or has a role with moderator permissions."""
+    if member.guild.owner_id == member.id:
+        return True
+    return any(role.permissions.administrator or role.permissions.moderate_members for role in member.roles)
 
 
 # Attachment hashing
@@ -51,36 +60,36 @@ def make_message_key(user_id: int, content: str, attachment_hashes: tuple) -> tu
     return (user_id, content, attachment_hashes)
 
 
-def record_and_check(guild_id: int, key: tuple, channel_id: int) -> set[int] | None:
+def record_and_check(guild_id: int, key: tuple, channel_id: int, message_id: int) -> list[tuple[int, int]] | None:
     """
-    Record this message occurrence and return the set of distinct channels
-    it appeared in if the spam threshold is reached, otherwise None.
+    Record this message occurrence and return a list of (channel_id, message_id) pairs
+    if the spam threshold is reached across enough distinct channels, otherwise None.
     Prunes entries older than SPAM_WINDOW_SECONDS automatically.
     """
     now = time.time()
     entries = tracker[guild_id][key]
 
-    entries.append((channel_id, now))
+    entries.append((channel_id, now, message_id))
 
-    # Drop stale entries outside the window
-    tracker[guild_id][key] = [(ch, ts) for ch, ts in entries if now - ts <= SPAM_WINDOW_SECONDS]
+    tracker[guild_id][key] = [(ch, ts, mid) for ch, ts, mid in entries if now - ts <= SPAM_WINDOW_SECONDS]
 
-    distinct_channels = {ch for ch, _ in tracker[guild_id][key]}
+    distinct_channels = {ch for ch, _, _ in tracker[guild_id][key]}
 
     if len(distinct_channels) >= SPAM_CHANNEL_THRESHOLD:
-        del tracker[guild_id][key]  # Reset so we don't re-alert for the same burst
-        return distinct_channels
+        matches = [(ch, mid) for ch, _, mid in tracker[guild_id][key]]
+        del tracker[guild_id][key]
+        return matches
 
     return None
 
 
 # Alerting
-def build_spam_embed(message: discord.Message, channels: set[int]) -> discord.Embed:
-    """Build the embed that gets posted to #general when spam is detected."""
+def build_spam_embed(message: discord.Message, matches: list[tuple[int, int]]) -> discord.Embed:
+    """Build the embed posted to #ALERT_CHANNEL_NAME when spam is detected."""
     attachment_links = "\n".join(a.url for a in message.attachments) or "None"
-    channel_mentions = ", ".join(f"<#{ch}>" for ch in channels)
+    channel_mentions = ", ".join(f"<#{ch}>" for ch, _ in matches)
 
-    embed = discord.Embed(title="🚨 [Testing] I smell spam", color=discord.Color.red())
+    embed = discord.Embed(title="🚨 I smell spam", color=discord.Color.red())
     embed.add_field(name="Sender", value=str(message.author), inline=False)
     embed.add_field(name="Message", value=message.content or "*(no text)*", inline=False)
     embed.add_field(name="Attachments", value=attachment_links, inline=False)
@@ -89,13 +98,30 @@ def build_spam_embed(message: discord.Message, channels: set[int]) -> discord.Em
     return embed
 
 
-async def send_spam_alert(guild: discord.Guild, message: discord.Message, channels: set[int]):
-    """Find #general and post a spam alert embed."""
-    general = discord.utils.get(guild.text_channels, name=ALERT_CHANNEL_NAME)
-    if not general:
+async def send_spam_alert(guild: discord.Guild, message: discord.Message, matches: list[tuple[int, int]]):
+    """Post a spam alert embed to #ALERT_CHANNEL_NAME."""
+    alert_channel = discord.utils.get(guild.text_channels, name=ALERT_CHANNEL_NAME)
+    if not alert_channel:
         print(f"[warn] Could not find #{ALERT_CHANNEL_NAME} in {guild.name}")
         return
-    await general.send(embed=build_spam_embed(message, channels))
+    await alert_channel.send(embed=build_spam_embed(message, matches))
+
+
+async def delete_spam_messages(guild: discord.Guild, matches: list[tuple[int, int]]):
+    """Delete all tracked spam messages by their stored IDs."""
+    for channel_id, message_id in matches:
+        channel = guild.get_channel(channel_id)
+        if not channel:
+            continue
+        try:
+            msg = await channel.fetch_message(message_id)
+            await msg.delete()
+        except discord.NotFound:
+            pass  # Already deleted
+        except discord.Forbidden:
+            print(f"[warn] Missing permission to delete message in #{channel.name}")
+        except Exception as e:
+            print(f"[error] Failed to delete message {message_id} in #{channel.name}: {e}")
 
 
 # Main
@@ -117,13 +143,17 @@ async def on_message(message: discord.Message):
 
     print(f"[{message.guild} / #{message.channel}] {message.author}: {message.content}")
 
+    if is_privileged(message.author):
+        return
+
     hashes = await get_attachment_hashes(message.attachments)
     key = make_message_key(message.author.id, message.content, hashes)
-    spam_channels = record_and_check(message.guild.id, key, message.channel.id)
+    matches = record_and_check(message.guild.id, key, message.channel.id, message.id)
 
-    if spam_channels:
-        print(f"[spam] {message.author} triggered spam detection across {len(spam_channels)} channels")
-        await send_spam_alert(message.guild, message, spam_channels)
+    if matches:
+        print(f"[spam] {message.author} triggered spam detection across {len(set(ch for ch, _ in matches))} channels")
+        await send_spam_alert(message.guild, message, matches)
+        await delete_spam_messages(message.guild, matches)
 
 
 def handle_sigint(sig, frame):
