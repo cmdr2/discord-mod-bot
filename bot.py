@@ -17,6 +17,7 @@ SPAM_WINDOW_SECONDS = 60
 SPAM_CHANNEL_THRESHOLD = 3
 ALERT_CHANNEL_NAME = "mod-room"  # Channel to send spam alerts to
 
+print("Writing logs to log.txt")
 log.basicConfig(
     filename="log.txt",
     filemode="a",
