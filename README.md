@@ -25,3 +25,6 @@ On the server that'll run the bot:
 1. `pip install discord.py`
 2. Create a `.env` file in the project root with `DISCORD_TOKEN=<your_bot_token>`, then run `source .env`
 3. Run `python bot.py`
+
+### Example post in #mod-room
+<img width="805" height="357" alt="image" src="https://github.com/user-attachments/assets/225c1ebb-8999-43de-a309-459c1093f720" />
