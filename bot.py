@@ -17,6 +17,7 @@ SPAM_WINDOW_SECONDS = 60
 SPAM_CHANNEL_THRESHOLD = 3
 ALERT_CHANNEL_NAME = "mod-room"  # Channel to send spam alerts to
 
+# Logging
 print("Writing logs to log.txt")
 log.basicConfig(
     filename="log.txt",
@@ -25,6 +26,37 @@ log.basicConfig(
     format="%(asctime)s - %(levelname)s - %(message)s",
     encoding="utf-8",
 )
+
+
+class SuppressConnectionTracebacks(log.Filter):
+    """
+    Suppress stack traces for transient connection errors that discord.py
+    handles internally via exponential-backoff reconnects.
+    Keeps the log message (e.g. "Attempting a reconnect in X seconds")
+    but strips the exc_info so no traceback is printed.
+    """
+
+    _TRANSIENT = (
+        OSError,
+        aiohttp.ClientConnectionError,
+        aiohttp.ServerDisconnectedError,
+        aiohttp.ClientOSError,
+        discord.ConnectionClosed,
+        discord.GatewayNotFound,
+        asyncio.TimeoutError,
+    )
+
+    def filter(self, record: log.LogRecord) -> bool:
+        if record.exc_info:
+            exc_type = record.exc_info[0]
+            if exc_type and issubclass(exc_type, self._TRANSIENT):
+                record.exc_info = None
+                record.exc_text = None
+        return True  # always keep the message itself
+
+
+discord_logger = log.getLogger("discord")  # Attach to the discord logger only
+discord_logger.addFilter(SuppressConnectionTracebacks())
 
 # State
 
