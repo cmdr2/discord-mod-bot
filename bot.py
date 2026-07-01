@@ -27,6 +27,13 @@ log.basicConfig(
     encoding="utf-8",
 )
 
+from aiohttp.client_exceptions import (
+    ClientConnectionError,
+    ClientConnectorError,
+    ClientConnectorDNSError,
+    ClientOSError,
+    ServerDisconnectedError,
+)
 
 class SuppressConnectionTracebacks(log.Filter):
     """
@@ -38,9 +45,11 @@ class SuppressConnectionTracebacks(log.Filter):
 
     _TRANSIENT = (
         OSError,
-        aiohttp.ClientConnectionError,
-        aiohttp.ServerDisconnectedError,
-        aiohttp.ClientOSError,
+        ClientConnectionError,
+        ClientConnectorError,
+        ClientConnectorDNSError,
+        ClientOSError,
+        ServerDisconnectedError,
         discord.ConnectionClosed,
         discord.GatewayNotFound,
         asyncio.TimeoutError,
