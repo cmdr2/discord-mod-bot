@@ -19,13 +19,6 @@ ALERT_CHANNEL_NAME = "mod-room"  # Channel to send spam alerts to
 
 # Logging
 print("Writing logs to log.txt")
-log.basicConfig(
-    filename="log.txt",
-    filemode="a",
-    level=log.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s",
-    encoding="utf-8",
-)
 
 from aiohttp.client_exceptions import (
     ClientConnectionError,
@@ -34,6 +27,7 @@ from aiohttp.client_exceptions import (
     ClientOSError,
     ServerDisconnectedError,
 )
+
 
 class SuppressConnectionTracebacks(log.Filter):
     """
@@ -64,8 +58,11 @@ class SuppressConnectionTracebacks(log.Filter):
         return True  # always keep the message itself
 
 
-discord_logger = log.getLogger("discord")  # Attach to the discord logger only
-discord_logger.addFilter(SuppressConnectionTracebacks())
+file_handler = log.FileHandler("log.txt", mode="a", encoding="utf-8")
+file_handler.setFormatter(log.Formatter("%(asctime)s - %(levelname)s - %(message)s"))
+file_handler.addFilter(SuppressConnectionTracebacks())
+
+log.basicConfig(handlers=[file_handler], level=log.INFO)
 
 # State
 
